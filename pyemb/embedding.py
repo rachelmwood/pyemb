@@ -11,6 +11,8 @@ from ._utils import (
     _unfold_from_snapshots,
     _requires_dependency,
     _form_attributed_matrix,
+    _sparse_weighted_als,
+    _dense_weighted_als
 )
 from .tools import to_laplacian
 
@@ -588,6 +590,44 @@ def AUASE(As, Cs, d, alpha, norm = True,
         return YA
 
 
+def MUASE(As, Ms, d, flat = True, sparse_matrix = False,  return_left=False):
+    n = As[0].shape[0]
+    T = len(As)
+    
+    if isinstance(d, list):
+        dim = max(d)
+    else:
+        dim = d
+    # Construct the rectangular unfolded adjacency
+    if sparse_matrix:
+        A = sparse.hstack(As)
+        M = sparse.hstack(Ms)
+    else:
+        A = np.hstack(As)
+        M = np.hstack(Ms)
+
+    # SVD spectral embedding
+    if sparse_matrix:
+        UA, SA, VAt = _sparse_weighted_als(A, M, d=dim, reg=1e-5, initialisation='svd', orthogonalize=True)
+    else:
+        UA, SA, VAt = _dense_weighted_als(A, M, d =dim, reg=1e-5, initialisation='svd', orthogonalize=True)
+    VA = VAt.T
+    idx = SA.argsort()[::-1]
+    VA = VA[:, idx]
+    UA = UA[:, idx]
+    SA = SA[idx]
+    YA_flat = VA @ np.diag(np.sqrt(SA))
+    XA = UA @ np.diag(np.sqrt(SA))
+    if flat:
+        YA = YA_flat
+    else:
+        YA = np.zeros((T, n, d))
+        for t in range(T):
+            YA[t, :, :] = YA_flat[n * t : n * (t + 1), :]
+    if return_left:
+        return XA, YA
+    else:
+        return YA
 
 def dyn_embed(
     As,

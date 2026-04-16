@@ -1,11 +1,10 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from scipy import sparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from re import sub, compile
 from sklearn.preprocessing import normalize
-
 
 try:
     from numba import njit
@@ -450,3 +449,268 @@ def _find_colours(
             else:
                 plot_colours[k] = mixed_colour
     return plot_colours
+
+def _dense_weighted_als(A, W, d, max_iter=1000, tol = 1e-5, reg=1e-5, initialisation='svd',
+                        orthogonalize=True, verbose=False):
+    
+    """
+    Dense weighted ALS for low-rank approximation.
+
+    Parameters
+    ----------
+    A: numpy.ndarray
+        A dense adjacency matrix of shape ``(T*n, n)``
+    W: numpy.ndarry
+        A dense weight matrix with the same shape as A
+    rank: int
+        The number of dimensions to return
+    max_iter: int, optional
+        The maximum number of iterations of the EM algorithm to run
+    tol: float, optional
+        The accepted tolerance of the convergence of the minimisation of the loss function
+    reg: float, optional
+        The regularisation term
+    initialisation: str, optional
+        How to initialise the embedding vectors. Options are ``svd`` or  ``random``.
+    orthogonalize: bool, optional
+        Whether to return normalized vectors and vector of eigenvalues.
+    verbose: bool, optional
+        Whether to print the value of the loss function for each iteration
+
+    Returns
+    -------
+    numpy.ndarray
+        Left singular vectors of shape ``(n, rank)``
+    numpy.ndarray
+        The singular values, shape ``(rank,)``
+    numpy.ndarray
+        singular vectors of shape ``(T*n, rank)``
+
+    """ """
+    Dense weighted ALS for low-rank approximation.
+
+    Parameters
+    ----------
+    A: numpy.ndarray
+        A dense adjacency matrix of shape ``(m, n)``
+    W: numpy.ndarry
+        A dense weight matrix with the same shape as A
+    d: int
+        The number of dimensions to return
+    max_iter: int, optional
+        The maximum number of iterations of the EM algorithm to run
+    tol: float, optional
+        The accepted tolerance of the convergence of the minimisation of the loss function
+    reg: float, optional
+        The regularisation term
+    initialisation: str, optional
+        How to initialise the embedding vectors. Options are ``svd`` or  ``random``.
+    orthogonalize: bool, optional
+        Whether to return normalized vectors and vector of eigenvalues.
+    verbose: bool, optional
+        Whether to print the value of the loss function for each iteration
+
+    Returns
+    -------
+    numpy.ndarray
+        Left singular vectors of shape ``(n, d)``
+    numpy.ndarray
+        The singular values, shape ``(d,)``
+    numpy.ndarray
+        singular vectors of shape ``(m, d)``
+
+    """
+    n, m = A.shape
+
+    if initialisation == 'svd':
+      # svd initialization
+      u, s, vt = sparse.linalg.svds(A, k=d)
+      U = u @ np.diag(np.sqrt(s))
+      V = vt.T @ np.diag(np.sqrt(s))
+    elif initialisation == 'random':
+      # random initialisation
+      U = np.random.randn(n, d)
+      V = np.random.randn(m, d)
+    else:
+      raise ValueError('initialisation must be "svd" or "random"')
+        
+    I_d = np.eye(d)
+
+    pred = np.sum(W * (A - U @ V.T)**2)
+    # Perform EM algorithm 
+    for it in range(max_iter):
+        # --- Update U ---
+        for i in range(n):
+            W_i = np.diag(W[i, :])
+            lhs = V.T @ W_i @ V + I_d
+            rhs = V.T @ W_i @ A[i, :]
+            U[i, :] = np.linalg.solve(lhs, rhs)
+
+        # --- Update V ---
+        for j in range(m):
+            W_j = np.diag(W[:, j])
+            lhs = U.T @ W_j @ U + I_d
+            rhs = U.T @ W_j @ A[:, j]
+            V[j, :] = np.linalg.solve(lhs, rhs)
+        new_pred = np.sum(W * (A - U @ V.T)**2)
+        
+        if verbose:
+            print(f"Iter {it}: loss = {pred:.6f}")
+            
+        if abs(new_pred - pred) < tol:
+            break
+        pred = new_pred
+    if orthogonalize:
+        X = U @ V.T
+        U, S, VT = sparse.linalg.svds(X, d)
+        idx = S.argsort()[::-1]
+        V = VT[idx, :]
+        U = U[:, idx]
+        S = S[idx]
+    else:   
+        S = np.ones(d)
+    return U, S, V
+
+def _sparse_weighted_als(A, W, d, max_iter=1000, tol = 1e-5, reg=1e-5, initialisation='svd',
+                        orthogonalize=True, verbose=False):
+    """
+    Sparse Weighted ALS for low-rank approximation.
+
+    Args:
+        rows, cols: arrays of indices of observed entries
+        vals: observed values A_ij
+        weights: optional weights w_ij (same length as vals)
+        shape: (n, m)
+    Returns:
+        U (n x k), V (m x k)
+    """ """
+    Dense weighted ALS for low-rank approximation.
+
+    Parameters
+    ----------
+    A: numpy.ndarray
+        A dense adjacency matrix of shape ``(T*n, n)``
+    W: numpy.ndarry
+        A dense weight matrix with the same shape as A
+    d: int
+        The number of dimensions to return
+    max_iter: int, optional
+        The maximum number of iterations of the EM algorithm to run
+    tol: float, optional
+        The accepted tolerance of the convergence of the minimisation of the loss function
+    reg: float, optional
+        The regularisation term
+    initialisation: str, optional
+        How to initialise the embedding vectors. Options are ``svd`` or  ``random``.
+    orthogonalize: bool, optional
+        Whether to return normalized vectors and vector of eigenvalues.
+    verbose: bool, optional
+        Whether to print the value of the loss function for each iteration
+
+    Returns
+    -------
+    numpy.ndarray
+        Left singular vectors of shape ``(n, d)``
+    numpy.ndarray
+        The singular values, shape ``(d,)``
+    numpy.ndarray
+        singular vectors of shape ``(T*n, d)``
+
+    """
+    rows, cols = W.nonzero()
+    vals = A[rows, cols]
+    vals = np.array(vals).flatten()
+    weights = W[rows, cols]
+    weights = np.array(weights).flatten()
+
+    if weights is None:
+        weights = np.ones_like(vals)
+
+    n, m = A.shape
+
+    # Build row-wise and column-wise adjacency
+    row_data = defaultdict(list)
+    col_data = defaultdict(list)
+
+    for i, j, v, w in zip(rows, cols, vals, weights):
+        row_data[i].append((j, v, w))
+        col_data[j].append((i, v, w))
+
+    if initialisation == 'svd':
+      # sparse svd initialization
+      u, s, vt = sparse.linalg.svds(A, k=d)
+      U = u @ np.diag(np.sqrt(s))
+      V = vt.T @ np.diag(np.sqrt(s))
+    elif initialisation == 'random':
+      # random initialization
+      U = np.random.randn(n, d)
+      V = np.random.randn(m, d)
+    else:
+      raise ValueError('initialisation must be "svd" or "random"')
+    
+    I_d = np.eye(d)
+
+    pred = np.inf
+
+    for it in range(max_iter):
+        new_pred = 0
+        # --- Update U ---
+        for i in row_data:
+            entries = row_data[i]
+
+            V_i = np.array([V[j] for j, _, _ in entries])
+            A_i = np.array([v for _, v, _ in entries])
+            W_i = np.array([w for _, _, w in entries])
+
+            # Weighted least squares
+            V_weighted = V_i * W_i[:, None]
+
+            lhs = V_weighted.T @ V_i + reg * I_d
+            rhs = V_weighted.T @ A_i
+
+            U[i] = np.linalg.solve(lhs, rhs)
+
+        # --- Update V ---
+        for j in col_data:
+            entries = col_data[j]
+
+            U_j = np.array([U[i] for i, _, _ in entries])
+            A_j = np.array([v for _, v, _ in entries])
+            W_j = np.array([w for _, _, w in entries])
+
+            U_weighted = U_j * W_j[:, None]
+
+            lhs = U_weighted.T @ U_j + reg * I_d
+            rhs = U_weighted.T @ A_j
+        
+        for start in range(0, len(vals), 100000):
+            end = start + 100000
+            b_rows = rows[start:end]
+            b_cols = cols[start:end]
+            b_vals = vals[start:end]
+            b_weights = weights[start:end]
+            
+            # Predict only for the current batch
+            V[j] = np.linalg.solve(lhs, rhs)
+            predictions = np.sum(U[b_rows] * V[b_cols], axis=1)
+            new_pred += np.sum(b_weights * (b_vals - predictions)**2)
+            
+
+        if verbose:
+            print(f"Iter {it}: loss = {new_pred:.6f}")
+        if abs(new_pred - pred) < tol:
+            break
+        pred = new_pred
+
+    # --- Optional orthogonalization --- 
+    if orthogonalize:
+        X = U @ V.T
+        U, S, VT = sparse.linalg.svds(X, d)
+        U, S, VT = sparse.linalg.svds(X, d)
+        idx = S.argsort()[::-1]
+        V = VT[idx, :]
+        U = U[:, idx]
+        S = S[idx]
+    else:
+        S = np.ones(d)
+    return U,S,V
